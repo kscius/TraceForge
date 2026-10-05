@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { prisma } from "@traceforge/db";
 import { z } from "zod";
+import { assertPatCanWrite } from "../lib/pat-scopes.js";
 
 export const workspaceRoutes: FastifyPluginAsync = async (app) => {
   app.get("/workspaces", async (req) => {
@@ -30,6 +31,7 @@ export const workspaceRoutes: FastifyPluginAsync = async (app) => {
 
   app.post("/workspaces", async (req) => {
     const user = await app.requireUser(req);
+    assertPatCanWrite(user);
     const body = z
       .object({
         slug: z.string().min(2).max(48).regex(/^[a-z0-9-]+$/),

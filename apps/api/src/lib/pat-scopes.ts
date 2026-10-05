@@ -19,3 +19,10 @@ export function assertPatCanRead(user: AuthUser): void {
   if (hasScope(scopes, "admin", "api", "read", "write", "mcp")) return;
   throw new AppError("Token lacks read scope", 403, "forbidden");
 }
+
+/** Personal access tokens cannot mint or revoke other tokens. */
+export function assertJwtSession(user: AuthUser): void {
+  if (user.authMethod === "pat") {
+    throw new AppError("Interactive session required", 403, "forbidden");
+  }
+}

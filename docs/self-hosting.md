@@ -24,7 +24,16 @@ pnpm dev
 - API: http://localhost:4000
 - OpenAPI UI: http://localhost:4000/docs
 
-Demo login after seed:
+### First user (production)
+
+Set in your production env before the first migrate/seed:
+
+- `SEED_DEMO_DATA=false` (default in `deploy/host.example/docker-compose.prod.yml`)
+- `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD` (and optional `SEED_ADMIN_NAME`) to create your owner account and workspace
+
+Or use **Create account** in the web UI after deploy (set `ALLOW_REGISTRATION=true` on the API in production; each registration creates a private workspace).
+
+Demo login (local dev only, when `SEED_DEMO_DATA` is enabled):
 
 - Email: `demo@traceforge.local`
 - Password: `demo123456`

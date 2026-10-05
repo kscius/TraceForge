@@ -21,7 +21,71 @@ const TASK_TYPES = [
   { key: "epic", name: "Epic", color: "#8b5cf6" },
 ];
 
-async function main() {
+function seedDemoEnabled(): boolean {
+  const flag = process.env.SEED_DEMO_DATA?.toLowerCase();
+  if (flag === "false" || flag === "0" || flag === "no") return false;
+  if (flag === "true" || flag === "1" || flag === "yes") return true;
+  return process.env.NODE_ENV !== "production";
+}
+
+async function bootstrapAdmin() {
+  const email = process.env.SEED_ADMIN_EMAIL?.trim();
+  const password = process.env.SEED_ADMIN_PASSWORD;
+  if (!email || !password) return;
+
+  const passwordHash = await bcrypt.hash(password, 12);
+  const name = process.env.SEED_ADMIN_NAME?.trim() || email.split("@")[0];
+  const slugBase = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "main";
+  const slug = slugBase.slice(0, 48);
+
+  const user = await prisma.user.upsert({
+    where: { email },
+    update: { name },
+    create: { email, name, passwordHash },
+  });
+
+  const existingMember = await prisma.workspaceMember.findFirst({
+    where: { userId: user.id },
+  });
+  if (existingMember) {
+    console.log("Bootstrap admin workspace already exists.");
+    return;
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const ws = await tx.workspace.create({
+      data: {
+        slug,
+        name: `${name}'s Workspace`,
+        description: "Primary workspace",
+      },
+    });
+    await tx.workspaceMember.create({
+      data: { workspaceId: ws.id, userId: user.id, role: WorkspaceRole.OWNER },
+    });
+    const workflow = await tx.workflowDefinition.create({
+      data: {
+        workspaceId: ws.id,
+        name: "Software Delivery",
+        isDefault: true,
+        states: { create: DEFAULT_STATES.map((s) => ({ ...s, isTerminal: s.isTerminal ?? false })) },
+      },
+      include: { states: true },
+    });
+    await tx.project.create({
+      data: {
+        workspaceId: ws.id,
+        workflowId: workflow.id,
+        key: "TF",
+        name: "Main Project",
+      },
+    });
+  });
+
+  console.log(`Bootstrap admin workspace created (slug: ${slug}).`);
+}
+
+async function seedDemo() {
   const passwordHash = await bcrypt.hash("demo123456", 12);
 
   const user = await prisma.user.upsert({
@@ -205,11 +269,20 @@ async function main() {
     });
   }
 
-  console.log("Seed complete:");
+  console.log("Demo seed complete:");
   console.log("  Email: demo@traceforge.local");
   console.log("  Password: demo123456");
   console.log("  Workspace: demo");
   console.log("  Project: TF");
+}
+
+async function main() {
+  await bootstrapAdmin();
+  if (seedDemoEnabled()) {
+    await seedDemo();
+  } else {
+    console.log("Demo seed skipped (set SEED_DEMO_DATA=true to enable).");
+  }
 }
 
 main()

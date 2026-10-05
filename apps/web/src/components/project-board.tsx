@@ -21,7 +21,14 @@ type Project = {
   workflow: { states: WorkflowState[] };
 };
 
-export function ProjectBoard() {
+type ProjectBoardProps = {
+  workspaceSlug: string | null;
+  onWorkspaceSlug: (slug: string) => void;
+};
+
+export function ProjectBoard({ workspaceSlug, onWorkspaceSlug }: ProjectBoardProps) {
+  const [workspaces, setWorkspaces] = useState<{ slug: string; name: string }[]>([]);
+  const [activeSlug, setActiveSlug] = useState<string | null>(workspaceSlug);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -34,18 +41,37 @@ export function ProjectBoard() {
   );
 
   const load = useCallback(async () => {
-    const ws = await api<{ workspaces: { slug: string }[] }>("/api/v1/workspaces");
-    const slug = ws.workspaces[0]?.slug ?? "demo";
+    const ws = await api<{ workspaces: { slug: string; name: string }[] }>("/api/v1/workspaces");
+    setWorkspaces(ws.workspaces);
+    const slug = activeSlug ?? workspaceSlug ?? ws.workspaces[0]?.slug;
+    if (!slug) {
+      setProjects([]);
+      setTasks([]);
+      return;
+    }
+    if (slug !== workspaceSlug) {
+      onWorkspaceSlug(slug);
+    }
     const { projects: ps } = await api<{ projects: Project[] }>(
       `/api/v1/workspaces/${slug}/projects`,
     );
     setProjects(ps);
-    const pid = projectId ?? ps[0]?.id;
-    if (!pid) return;
+    const pid = projectId && ps.some((p) => p.id === projectId) ? projectId : ps[0]?.id;
+    if (!pid) {
+      setProjectId(null);
+      setTasks([]);
+      return;
+    }
     setProjectId(pid);
     const { tasks: t } = await api<{ tasks: Task[] }>(`/api/v1/projects/${pid}/tasks`);
     setTasks(t);
-  }, [projectId]);
+  }, [projectId, activeSlug, workspaceSlug, onWorkspaceSlug]);
+
+  useEffect(() => {
+    if (workspaceSlug && workspaceSlug !== activeSlug) {
+      setActiveSlug(workspaceSlug);
+    }
+  }, [workspaceSlug, activeSlug]);
 
   useEffect(() => {
     load().catch(console.error);
@@ -71,11 +97,29 @@ export function ProjectBoard() {
 
   const states = project?.workflow.states ?? [];
 
+  const workspaceName =
+    workspaces.find((w) => w.slug === (activeSlug ?? workspaceSlug))?.name ?? activeSlug ?? "—";
+
   return (
-    <div className="layout">
-      <aside className="sidebar">
-        <h2 style={{ marginTop: 0 }}>TraceForge</h2>
-        <p style={{ color: "var(--muted)", fontSize: "0.9rem" }}>Demo workspace</p>
+    <div className="board-layout">
+      <aside className="board-sidebar">
+        <label style={{ fontSize: "0.85rem", color: "var(--muted)" }}>Workspace</label>
+        <select
+          value={activeSlug ?? workspaceSlug ?? ""}
+          onChange={(e) => {
+            setProjectId(null);
+            setActiveSlug(e.target.value);
+            onWorkspaceSlug(e.target.value);
+          }}
+          style={{ width: "100%", maxWidth: 320, marginBottom: "0.75rem" }}
+        >
+          {workspaces.map((w) => (
+            <option key={w.slug} value={w.slug}>
+              {w.name}
+            </option>
+          ))}
+        </select>
+        <p style={{ color: "var(--muted)", fontSize: "0.9rem", marginTop: 0 }}>{workspaceName}</p>
         <label style={{ fontSize: "0.85rem", color: "var(--muted)" }}>Project</label>
         <select
           value={project?.id ?? ""}
@@ -94,10 +138,10 @@ export function ProjectBoard() {
             value={newTitle}
             onChange={(e) => setNewTitle(e.target.value)}
           />
-          <button onClick={createTask}>Create task</button>
+          <button type="button" onClick={createTask}>Create task</button>
         </div>
       </aside>
-      <main className="main">
+      <div className="board-main">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h1 style={{ margin: 0 }}>{project?.name ?? "Project"}</h1>
           <div className="tabs">
@@ -170,7 +214,7 @@ export function ProjectBoard() {
             </tbody>
           </table>
         )}
-      </main>
+      </div>
     </div>
   );
 }

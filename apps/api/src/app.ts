@@ -17,6 +17,7 @@ import { taskRoutes } from "./routes/tasks.js";
 import { webhookRoutes } from "./routes/webhooks.js";
 import { integrationRoutes } from "./routes/integrations.js";
 import { tokenRoutes } from "./routes/tokens.js";
+import { githubRoutes } from "./routes/github.js";
 
 export async function buildApp() {
   const app = Fastify({
@@ -24,8 +25,12 @@ export async function buildApp() {
     bodyLimit: 2 * 1024 * 1024,
   });
 
+  const corsOrigins = [config.webUrl];
+  if (process.env.NODE_ENV !== "production") {
+    corsOrigins.push("http://localhost:3000");
+  }
   await app.register(cors, {
-    origin: [config.webUrl, "http://localhost:3000"],
+    origin: corsOrigins,
     credentials: true,
   });
 
@@ -54,6 +59,7 @@ export async function buildApp() {
   await app.register(taskRoutes, { prefix: "/api/v1" });
   await app.register(integrationRoutes, { prefix: "/api/v1" });
   await app.register(webhookRoutes, { prefix: "/api/v1" });
+  await app.register(githubRoutes, { prefix: "/api/v1" });
 
   app.setErrorHandler((err, req, reply) => {
     const error = err instanceof Error ? err : new Error(String(err));

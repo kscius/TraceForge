@@ -111,3 +111,31 @@ export async function requireProjectAccess(
 
   return { workspaceId: project.workspaceId, role: member.role };
 }
+
+export async function requireWorkspaceBySlug(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  slug: string,
+  minRole: WorkspaceRole = "MEMBER",
+): Promise<{ workspaceId: string; role: WorkspaceRole } | null> {
+  const user = req.user;
+  if (!user) {
+    sendProblem(reply, { status: 401, code: "unauthorized", title: "Unauthorized" }, req);
+    return null;
+  }
+
+  const member = await prisma.workspaceMember.findFirst({
+    where: { userId: user.id, workspace: { slug } },
+    include: { workspace: true },
+  });
+  if (!member || !hasMinRole(member.role, minRole)) {
+    sendProblem(
+      reply,
+      { status: 404, code: "not_found", title: "Not found", detail: "Workspace not found." },
+      req,
+    );
+    return null;
+  }
+
+  return { workspaceId: member.workspaceId, role: member.role };
+}

@@ -19,4 +19,7 @@ export const config = {
   jwtRefreshSecret: required("JWT_REFRESH_SECRET", "dev-jwt-refresh-change-me"),
   githubWebhookSecret: process.env.GITHUB_WEBHOOK_SECRET ?? "",
   storageLocalPath: process.env.STORAGE_LOCAL_PATH ?? "./data/uploads",
+  allowRegistration:
+    process.env.ALLOW_REGISTRATION === "true" ||
+    (!isProduction && process.env.ALLOW_REGISTRATION !== "false"),
 };
