@@ -1,0 +1,37 @@
+{
+  "name": "@traceforge/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "lint": "echo ok"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/cors": "^11.0.0",
+    "@fastify/multipart": "^9.0.3",
+    "@fastify/rate-limit": "^10.2.0",
+    "@fastify/swagger": "^9.4.2",
+    "@fastify/swagger-ui": "^5.2.2",
+    "@traceforge/db": "workspace:*",
+    "@traceforge/domain": "workspace:*",
+    "@traceforge/shared": "workspace:*",
+    "bcryptjs": "^3.0.2",
+    "fastify": "^5.2.1",
+    "jose": "^6.0.10",
+    "yaml": "^2.7.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.9"
+  }
+}

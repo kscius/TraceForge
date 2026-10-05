@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "traceforge": {
+      "command": "node",
+      "args": ["/absolute/path/to/TraceForge/apps/mcp/dist/index.js"],
+      "env": {
+        "TRACEFORGE_API_URL": "http://localhost:4000",
+        "TRACEFORGE_API_TOKEN": "your-personal-access-token"
+      }
+    }
+  }
+}

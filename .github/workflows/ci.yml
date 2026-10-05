@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: traceforge
+          POSTGRES_PASSWORD: traceforge
+          POSTGRES_DB: traceforge
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U traceforge"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://traceforge:traceforge@localhost:5432/traceforge
+      SESSION_SECRET: ci-session
+      JWT_ACCESS_SECRET: ci-access
+      JWT_REFRESH_SECRET: ci-refresh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install
+      - run: pnpm db:generate
+      - run: pnpm --filter @traceforge/db exec prisma migrate deploy
+      - run: pnpm build
+      - run: pnpm test

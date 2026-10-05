@@ -209,6 +209,27 @@ Core Domain
 
 The exact technology stack is evaluated based on maintainability, ecosystem maturity, operational complexity, performance, licensing, and self-hosting requirements.
 
+## Quick start (local)
+
+```bash
+cp .env.example .env
+docker compose up -d db
+pnpm install
+export DATABASE_URL=postgresql://traceforge:traceforge@localhost:5432/traceforge
+pnpm db:generate && pnpm db:migrate && pnpm db:seed
+pnpm dev
+```
+
+- Web: http://localhost:3000 (demo `demo@traceforge.local` / `demo123456` after seed)
+- API docs: http://localhost:4000/docs
+- MCP example: `docs/mcp/cursor-mcp.json.example`
+
+See [docs/self-hosting.md](docs/self-hosting.md) and [docs/architecture.md](docs/architecture.md).
+
+## Naming note (TaskForge vs TraceForge)
+
+The working name **TaskForge** is crowded on GitHub/npm (multiple unrelated repos and `@taskforge-ai/*` packages). This repository uses **TraceForge** for product identity while keeping **TF-** task identifiers (e.g. `TF-123`). Recommended GitHub target: `traceforgehq/traceforge`.
+
 ## Project status
 
 TraceForge is under active development.

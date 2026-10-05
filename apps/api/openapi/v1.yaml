@@ -1,0 +1,3015 @@
+openapi: 3.1.0
+info:
+  title: TraceForge API
+  version: 0.1.0
+  summary: Self-hosted development traceability platform
+  description: |
+    REST API for TraceForge Phases 1–3 (auth, workspaces, projects, tasks,
+    workflows, comments, labels, relationships, search, GitHub webhooks, AI context).
+
+    Base path is `/api/v1`. Health probes live at the origin root.
+
+    **Identifiers**
+    - Workspaces: `slug` (path) or cuid
+    - Projects: cuid; human key is `{KEY}` unique per workspace
+    - Tasks: cuid **or** `{PROJECTKEY}-{number}` (e.g. `TF-123`), case-insensitive
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+  contact:
+    name: TraceForge
+servers:
+  - url: http://localhost:4000
+    description: Local
+  - url: "{origin}"
+    description: Self-hosted origin (`API_PUBLIC_URL`)
+    variables:
+      origin:
+        default: http://localhost:4000
+tags:
+  - name: Health
+    description: Liveness and readiness (unversioned)
+  - name: Auth
+    description: Registration, login, session/JWT lifecycle, GitHub OAuth
+  - name: Tokens
+    description: Personal access tokens for CLI, MCP, and agents
+  - name: Workspaces
+    description: Tenant isolation for projects and members
+  - name: Members
+    description: Workspace membership and roles
+  - name: Projects
+    description: Projects and default workflow binding
+  - name: Workflows
+    description: Configurable states, transitions, and Kanban columns
+  - name: Labels
+    description: Workspace labels and task assignment
+  - name: TaskTypes
+    description: Workspace task types (feature, bug, chore, epic)
+  - name: Tasks
+    description: Tasks, subtasks, transitions, URLs, git links
+  - name: Comments
+    description: Task comments
+  - name: Relationships
+    description: Directed task-to-task links (blocks, depends, regression, …)
+  - name: Attachments
+    description: File attachments on tasks
+  - name: Activity
+    description: Task and workspace activity
+  - name: Search
+    description: Full-text search across tasks
+  - name: GitHub
+    description: Repository connections and git history
+  - name: Webhooks
+    description: Inbound GitHub webhooks (HMAC, no user principal)
+  - name: AI
+    description: Structured AI context for coding agents
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      tags: [Health]
+      operationId: getHealth
+      summary: Liveness
+      security: []
+      responses:
+        "200":
+          description: Process is up
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /ready:
+    get:
+      tags: [Health]
+      operationId: getReady
+      summary: Readiness (database reachable)
+      security: []
+      responses:
+        "200":
+          description: Ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+        "503":
+          $ref: "#/components/responses/Problem"
+
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      operationId: register
+      summary: Create the first or subsequent local user
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: User created; tokens issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSession"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Problem"
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Authenticate with email and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Authenticated
+          headers:
+            Set-Cookie:
+              description: Optional `tf_session` HttpOnly cookie for the web UI
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSession"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      operationId: refresh
+      summary: Rotate refresh token; issue a new access token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        "200":
+          description: New token pair (previous refresh revoked)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSession"
+        "401":
+          $ref: "#/components/responses/Problem"
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: Revoke current refresh session and clear cookie
+      responses:
+        "204":
+          description: Logged out
+
+  /api/v1/auth/me:
+    get:
+      tags: [Auth]
+      operationId: getMe
+      summary: Current principal
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Problem"
+    patch:
+      tags: [Auth]
+      operationId: updateMe
+      summary: Update profile (name, avatar)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  maxLength: 120
+                avatarUrl:
+                  type: string
+                  format: uri
+                  nullable: true
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/User"
+
+  /api/v1/auth/password/change:
+    post:
+      tags: [Auth]
+      operationId: changePassword
+      summary: Change password (authenticated)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword:
+                  type: string
+                newPassword:
+                  type: string
+                  minLength: 8
+      responses:
+        "204":
+          description: Password changed; existing refresh sessions revoked except current
+        "401":
+          $ref: "#/components/responses/Problem"
+
+  /api/v1/auth/github/authorize:
+    get:
+      tags: [Auth]
+      operationId: githubAuthorize
+      summary: Start GitHub OAuth (authorization code + PKCE)
+      description: |
+        Redirects the browser to GitHub. `state` is bound to the current user
+        (link) or to an anonymous login flow. Required GitHub scopes:
+        `read:user`, `user:email`, `repo`, `admin:repo_hook`.
+      security: []
+      parameters:
+        - name: redirect_uri
+          in: query
+          schema:
+            type: string
+            format: uri
+      responses:
+        "302":
+          description: Redirect to GitHub
+
+  /api/v1/auth/github/callback:
+    get:
+      tags: [Auth]
+      operationId: githubCallback
+      summary: GitHub OAuth callback
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "302":
+          description: Redirect to `WEB_PUBLIC_URL` with session established
+        "401":
+          $ref: "#/components/responses/Problem"
+
+  /api/v1/auth/github/unlink:
+    post:
+      tags: [Auth]
+      operationId: githubUnlink
+      summary: Disconnect GitHub identity (does not delete linked git artifacts)
+      responses:
+        "204":
+          description: Unlinked
+
+  /api/v1/auth/tokens:
+    get:
+      tags: [Tokens]
+      operationId: listTokens
+      summary: List personal access tokens (secret never returned)
+      responses:
+        "200":
+          description: Token metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tokens]
+                properties:
+                  tokens:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ApiTokenMeta"
+    post:
+      tags: [Tokens]
+      operationId: createToken
+      summary: Create a PAT; plaintext shown once
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTokenRequest"
+      responses:
+        "201":
+          description: Token created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateTokenResponse"
+
+  /api/v1/auth/tokens/{tokenId}:
+    delete:
+      tags: [Tokens]
+      operationId: revokeToken
+      summary: Revoke a PAT
+      parameters:
+        - $ref: "#/components/parameters/TokenId"
+      responses:
+        "204":
+          description: Revoked
+        "404":
+          $ref: "#/components/responses/Problem"
+
+  /api/v1/workspaces:
+    get:
+      tags: [Workspaces]
+      operationId: listWorkspaces
+      summary: Workspaces the caller belongs to
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Workspace list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    required: [workspaces]
+                    properties:
+                      workspaces:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/WorkspaceWithRole"
+                  - $ref: "#/components/schemas/PageEnvelope"
+    post:
+      tags: [Workspaces]
+      operationId: createWorkspace
+      summary: Create workspace; caller becomes OWNER; seeds default workflow + project
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWorkspaceRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace]
+                properties:
+                  workspace:
+                    $ref: "#/components/schemas/Workspace"
+        "409":
+          $ref: "#/components/responses/Problem"
+
+  /api/v1/workspaces/{slug}:
+    get:
+      tags: [Workspaces]
+      operationId: getWorkspace
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+      responses:
+        "200":
+          description: Workspace
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace, role]
+                properties:
+                  workspace:
+                    $ref: "#/components/schemas/Workspace"
+                  role:
+                    $ref: "#/components/schemas/WorkspaceRole"
+        "404":
+          $ref: "#/components/responses/Problem"
+    patch:
+      tags: [Workspaces]
+      operationId: updateWorkspace
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  maxLength: 120
+                description:
+                  type: string
+                  maxLength: 2000
+                  nullable: true
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace]
+                properties:
+                  workspace:
+                    $ref: "#/components/schemas/Workspace"
+    delete:
+      tags: [Workspaces]
+      operationId: deleteWorkspace
+      description: OWNER only. Soft-delete is out of scope for Phase 1; this is hard delete.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+      responses:
+        "204":
+          description: Deleted
+        "403":
+          $ref: "#/components/responses/Problem"
+
+  /api/v1/workspaces/{slug}/members:
+    get:
+      tags: [Members]
+      operationId: listMembers
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Members
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    required: [members]
+                    properties:
+                      members:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/WorkspaceMember"
+                  - $ref: "#/components/schemas/PageEnvelope"
+    post:
+      tags: [Members]
+      operationId: addMember
+      description: ADMIN or OWNER. Invite by existing user email (Phase 1 has no mailer).
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, role]
+              properties:
+                email:
+                  type: string
+                  format: email
+                role:
+                  $ref: "#/components/schemas/WorkspaceRole"
+      responses:
+        "201":
+          description: Added
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [member]
+                properties:
+                  member:
+                    $ref: "#/components/schemas/WorkspaceMember"
+
+  /api/v1/workspaces/{slug}/members/{userId}:
+    patch:
+      tags: [Members]
+      operationId: updateMemberRole
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:
+                  $ref: "#/components/schemas/WorkspaceRole"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [member]
+                properties:
+                  member:
+                    $ref: "#/components/schemas/WorkspaceMember"
+        "409":
+          description: Cannot demote the last OWNER
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+    delete:
+      tags: [Members]
+      operationId: removeMember
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "204":
+          description: Removed
+
+  /api/v1/workspaces/{slug}/projects:
+    get:
+      tags: [Projects]
+      operationId: listProjects
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Projects
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    required: [projects]
+                    properties:
+                      projects:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Project"
+                  - $ref: "#/components/schemas/PageEnvelope"
+    post:
+      tags: [Projects]
+      operationId: createProject
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProjectRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [project]
+                properties:
+                  project:
+                    $ref: "#/components/schemas/Project"
+
+  /api/v1/projects/{projectId}:
+    get:
+      tags: [Projects]
+      operationId: getProject
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200":
+          description: Project with workflow and boards
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [project]
+                properties:
+                  project:
+                    $ref: "#/components/schemas/ProjectDetail"
+        "404":
+          $ref: "#/components/responses/Problem"
+    patch:
+      tags: [Projects]
+      operationId: updateProject
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                  nullable: true
+                color:
+                  type: string
+                  nullable: true
+                workflowId:
+                  type: string
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [project]
+                properties:
+                  project:
+                    $ref: "#/components/schemas/Project"
+    delete:
+      tags: [Projects]
+      operationId: deleteProject
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "204":
+          description: Deleted (cascades tasks)
+
+  /api/v1/workspaces/{slug}/workflows:
+    get:
+      tags: [Workflows]
+      operationId: listWorkflows
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+      responses:
+        "200":
+          description: Workflows
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workflows]
+                properties:
+                  workflows:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Workflow"
+    post:
+      tags: [Workflows]
+      operationId: createWorkflow
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWorkflowRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workflow]
+                properties:
+                  workflow:
+                    $ref: "#/components/schemas/WorkflowDetail"
+
+  /api/v1/workspaces/{slug}/workflows/{workflowId}:
+    get:
+      tags: [Workflows]
+      operationId: getWorkflow
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/WorkflowId"
+      responses:
+        "200":
+          description: Workflow with states and transitions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workflow]
+                properties:
+                  workflow:
+                    $ref: "#/components/schemas/WorkflowDetail"
+    patch:
+      tags: [Workflows]
+      operationId: updateWorkflow
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/WorkflowId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                isDefault:
+                  type: boolean
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workflow]
+                properties:
+                  workflow:
+                    $ref: "#/components/schemas/Workflow"
+    delete:
+      tags: [Workflows]
+      operationId: deleteWorkflow
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/WorkflowId"
+      responses:
+        "204":
+          description: Deleted
+        "409":
+          description: Workflow is in use by a project
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /api/v1/workspaces/{slug}/workflows/{workflowId}/states:
+    post:
+      tags: [Workflows]
+      operationId: createWorkflowState
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/WorkflowId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkflowStateInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [state]
+                properties:
+                  state:
+                    $ref: "#/components/schemas/WorkflowState"
+
+  /api/v1/workspaces/{slug}/workflows/{workflowId}/states/{stateId}:
+    patch:
+      tags: [Workflows]
+      operationId: updateWorkflowState
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/WorkflowId"
+        - name: stateId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkflowStateInput"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [state]
+                properties:
+                  state:
+                    $ref: "#/components/schemas/WorkflowState"
+    delete:
+      tags: [Workflows]
+      operationId: deleteWorkflowState
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/WorkflowId"
+        - name: stateId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+        "409":
+          $ref: "#/components/responses/Problem"
+
+  /api/v1/workspaces/{slug}/workflows/{workflowId}/transitions:
+    post:
+      tags: [Workflows]
+      operationId: createWorkflowTransition
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/WorkflowId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fromStateId, toStateId]
+              properties:
+                fromStateId:
+                  type: string
+                toStateId:
+                  type: string
+                name:
+                  type: string
+                  nullable: true
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [transition]
+                properties:
+                  transition:
+                    $ref: "#/components/schemas/WorkflowTransition"
+
+  /api/v1/workspaces/{slug}/workflows/{workflowId}/transitions/{transitionId}:
+    delete:
+      tags: [Workflows]
+      operationId: deleteWorkflowTransition
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/WorkflowId"
+        - name: transitionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+
+  /api/v1/workspaces/{slug}/labels:
+    get:
+      tags: [Labels]
+      operationId: listLabels
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+      responses:
+        "200":
+          description: Labels
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [labels]
+                properties:
+                  labels:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Label"
+    post:
+      tags: [Labels]
+      operationId: createLabel
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LabelInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [label]
+                properties:
+                  label:
+                    $ref: "#/components/schemas/Label"
+
+  /api/v1/workspaces/{slug}/labels/{labelId}:
+    patch:
+      tags: [Labels]
+      operationId: updateLabel
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/LabelId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LabelInput"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [label]
+                properties:
+                  label:
+                    $ref: "#/components/schemas/Label"
+    delete:
+      tags: [Labels]
+      operationId: deleteLabel
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/LabelId"
+      responses:
+        "204":
+          description: Deleted (unassigns from tasks)
+
+  /api/v1/workspaces/{slug}/task-types:
+    get:
+      tags: [TaskTypes]
+      operationId: listTaskTypes
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+      responses:
+        "200":
+          description: Task types
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [taskTypes]
+                properties:
+                  taskTypes:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TaskType"
+    post:
+      tags: [TaskTypes]
+      operationId: createTaskType
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskTypeInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [taskType]
+                properties:
+                  taskType:
+                    $ref: "#/components/schemas/TaskType"
+
+  /api/v1/projects/{projectId}/tasks:
+    get:
+      tags: [Tasks]
+      operationId: listProjectTasks
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Order"
+        - $ref: "#/components/parameters/StatusIdFilter"
+        - $ref: "#/components/parameters/AssigneeIdFilter"
+        - $ref: "#/components/parameters/LabelIdFilter"
+        - $ref: "#/components/parameters/PriorityFilter"
+        - $ref: "#/components/parameters/TypeIdFilter"
+        - $ref: "#/components/parameters/ParentIdFilter"
+        - $ref: "#/components/parameters/ArchivedFilter"
+        - $ref: "#/components/parameters/QueryQ"
+      responses:
+        "200":
+          description: Tasks (excludes archived unless `archived=true`)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    required: [tasks]
+                    properties:
+                      tasks:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/TaskSummary"
+                  - $ref: "#/components/schemas/PageEnvelope"
+    post:
+      tags: [Tasks]
+      operationId: createTask
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/IdempotencyKeyRequired"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskRequest"
+      responses:
+        "201":
+          description: Created with identifier `{KEY}-{n}`
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task]
+                properties:
+                  task:
+                    $ref: "#/components/schemas/Task"
+
+  /api/v1/workspaces/{slug}/tasks:
+    get:
+      tags: [Tasks]
+      operationId: listWorkspaceTasks
+      summary: Cross-project task list for a workspace
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Order"
+        - name: project_id
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/StatusIdFilter"
+        - $ref: "#/components/parameters/AssigneeIdFilter"
+        - $ref: "#/components/parameters/LabelIdFilter"
+        - $ref: "#/components/parameters/PriorityFilter"
+        - $ref: "#/components/parameters/ArchivedFilter"
+        - $ref: "#/components/parameters/QueryQ"
+      responses:
+        "200":
+          description: Tasks
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    required: [tasks]
+                    properties:
+                      tasks:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/TaskSummary"
+                  - $ref: "#/components/schemas/PageEnvelope"
+
+  /api/v1/tasks/{taskId}:
+    get:
+      tags: [Tasks]
+      operationId: getTask
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "200":
+          description: Task detail
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task]
+                properties:
+                  task:
+                    $ref: "#/components/schemas/TaskDetail"
+        "404":
+          $ref: "#/components/responses/Problem"
+    patch:
+      tags: [Tasks]
+      operationId: updateTask
+      description: |
+        JSON merge-patch. Send `version` or `If-Match` for optimistic concurrency.
+        Status changes must use `POST .../transition` so workflow rules apply.
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTaskRequest"
+      responses:
+        "200":
+          description: Updated (`version` incremented)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task]
+                properties:
+                  task:
+                    $ref: "#/components/schemas/Task"
+        "409":
+          description: Version conflict
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+    delete:
+      tags: [Tasks]
+      operationId: archiveTask
+      summary: Archive a task (sets archivedAt)
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "204":
+          description: Archived
+
+  /api/v1/tasks/{taskId}/restore:
+    post:
+      tags: [Tasks]
+      operationId: restoreTask
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "200":
+          description: Restored
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task]
+                properties:
+                  task:
+                    $ref: "#/components/schemas/Task"
+
+  /api/v1/tasks/{taskId}/transition:
+    post:
+      tags: [Tasks]
+      operationId: transitionTask
+      summary: Move task to another workflow state
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransitionTaskRequest"
+      responses:
+        "200":
+          description: Transitioned
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task]
+                properties:
+                  task:
+                    $ref: "#/components/schemas/Task"
+        "409":
+          description: Illegal transition or version conflict
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /api/v1/tasks/{taskId}/reorder:
+    post:
+      tags: [Tasks]
+      operationId: reorderTask
+      summary: Update Kanban position within a status column
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [position]
+              properties:
+                position:
+                  type: integer
+                  minimum: 0
+                statusId:
+                  type: string
+                  description: If set, also transition (must be a legal transition)
+      responses:
+        "200":
+          description: Reordered
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task]
+                properties:
+                  task:
+                    $ref: "#/components/schemas/Task"
+
+  /api/v1/tasks/{taskId}/comments:
+    get:
+      tags: [Comments]
+      operationId: listComments
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Comments oldest-first
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    required: [comments]
+                    properties:
+                      comments:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Comment"
+                  - $ref: "#/components/schemas/PageEnvelope"
+    post:
+      tags: [Comments]
+      operationId: createComment
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/IdempotencyKeyRequired"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCommentRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [comment]
+                properties:
+                  comment:
+                    $ref: "#/components/schemas/Comment"
+
+  /api/v1/tasks/{taskId}/comments/{commentId}:
+    patch:
+      tags: [Comments]
+      operationId: updateComment
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/CommentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCommentRequest"
+      responses:
+        "200":
+          description: Updated (`editedAt` set)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [comment]
+                properties:
+                  comment:
+                    $ref: "#/components/schemas/Comment"
+    delete:
+      tags: [Comments]
+      operationId: deleteComment
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/CommentId"
+      responses:
+        "204":
+          description: Deleted
+
+  /api/v1/tasks/{taskId}/relationships:
+    get:
+      tags: [Relationships]
+      operationId: listRelationships
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "200":
+          description: Outgoing and incoming relationships
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [relationships]
+                properties:
+                  relationships:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TaskRelationship"
+    post:
+      tags: [Relationships]
+      operationId: createRelationship
+      description: |
+        Canonical create path. `POST /api/v1/tasks/{taskId}/links` is an alias
+        kept for the Phase 1 stub and should be treated as deprecated.
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/IdempotencyKeyRequired"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRelationshipRequest"
+      responses:
+        "201":
+          description: Created (inverse edge is implied, not stored twice)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [relationship]
+                properties:
+                  relationship:
+                    $ref: "#/components/schemas/TaskRelationship"
+        "409":
+          description: Duplicate pair+type
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /api/v1/tasks/{taskId}/links:
+    post:
+      tags: [Relationships]
+      operationId: createRelationshipAlias
+      deprecated: true
+      summary: Alias of POST /relationships
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/IdempotencyKeyRequired"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRelationshipRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [relationship]
+                properties:
+                  relationship:
+                    $ref: "#/components/schemas/TaskRelationship"
+
+  /api/v1/tasks/{taskId}/relationships/{relationshipId}:
+    delete:
+      tags: [Relationships]
+      operationId: deleteRelationship
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - name: relationshipId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+
+  /api/v1/tasks/{taskId}/labels/{labelId}:
+    put:
+      tags: [Labels]
+      operationId: assignLabel
+      summary: Idempotent label assign
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/LabelId"
+      responses:
+        "204":
+          description: Assigned
+    delete:
+      tags: [Labels]
+      operationId: unassignLabel
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/LabelId"
+      responses:
+        "204":
+          description: Unassigned
+
+  /api/v1/tasks/{taskId}/urls:
+    get:
+      tags: [Tasks]
+      operationId: listTaskUrls
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "200":
+          description: URLs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [urls]
+                properties:
+                  urls:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TaskUrl"
+    post:
+      tags: [Tasks]
+      operationId: createTaskUrl
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskUrlRequest"
+      responses:
+        "201":
+          description: Created (`kind` inferred from URL)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url]
+                properties:
+                  url:
+                    $ref: "#/components/schemas/TaskUrl"
+
+  /api/v1/tasks/{taskId}/urls/{urlId}:
+    delete:
+      tags: [Tasks]
+      operationId: deleteTaskUrl
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - name: urlId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+
+  /api/v1/tasks/{taskId}/attachments:
+    get:
+      tags: [Attachments]
+      operationId: listAttachments
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "200":
+          description: Attachments (no binary)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [attachments]
+                properties:
+                  attachments:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Attachment"
+    post:
+      tags: [Attachments]
+      operationId: uploadAttachment
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "201":
+          description: Uploaded
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [attachment]
+                properties:
+                  attachment:
+                    $ref: "#/components/schemas/Attachment"
+
+  /api/v1/tasks/{taskId}/attachments/{attachmentId}:
+    get:
+      tags: [Attachments]
+      operationId: downloadAttachment
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - name: attachmentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: File bytes
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "302":
+          description: Redirect to signed object-storage URL
+    delete:
+      tags: [Attachments]
+      operationId: deleteAttachment
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - name: attachmentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+
+  /api/v1/tasks/{taskId}/activity:
+    get:
+      tags: [Activity]
+      operationId: listTaskActivity
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Newest first
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    required: [activity]
+                    properties:
+                      activity:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/ActivityEvent"
+                  - $ref: "#/components/schemas/PageEnvelope"
+
+  /api/v1/search:
+    get:
+      tags: [Search]
+      operationId: search
+      summary: Search tasks the caller can see
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 200
+        - name: workspaceSlug
+          in: query
+          schema:
+            type: string
+        - name: types
+          in: query
+          description: Comma-separated; Phase 3 supports `task` only. Phase 5 adds comment/project.
+          schema:
+            type: string
+            default: task
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Ranked results
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    required: [results]
+                    properties:
+                      results:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/SearchResult"
+                  - $ref: "#/components/schemas/PageEnvelope"
+
+  /api/v1/workspaces/{slug}/integrations/github/repositories:
+    get:
+      tags: [GitHub]
+      operationId: listGithubRepositories
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+      responses:
+        "200":
+          description: Connected repos
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [repositories]
+                properties:
+                  repositories:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GithubRepository"
+    post:
+      tags: [GitHub]
+      operationId: connectGithubRepository
+      summary: Connect a repo using the caller's GitHub OAuth token and register the webhook
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fullName]
+              properties:
+                fullName:
+                  type: string
+                  description: `owner/repo`
+                  example: acme/traceforge
+      responses:
+        "201":
+          description: Connected
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [repository]
+                properties:
+                  repository:
+                    $ref: "#/components/schemas/GithubRepository"
+
+  /api/v1/workspaces/{slug}/integrations/github/repositories/{repositoryId}:
+    delete:
+      tags: [GitHub]
+      operationId: disconnectGithubRepository
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - name: repositoryId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Disconnected (git links on tasks are retained)
+
+  /api/v1/tasks/{taskId}/git:
+    get:
+      tags: [GitHub]
+      operationId: getTaskGitHistory
+      summary: Branches, commits, PRs, checks, deployments linked to the task
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "200":
+          description: Git association bundle
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskGitHistory"
+
+  /api/v1/tasks/{taskId}/git-links:
+    post:
+      tags: [GitHub]
+      operationId: createGitLink
+      summary: Explicit manual git association
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateGitLinkRequest"
+      responses:
+        "201":
+          description: Linked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [link]
+                properties:
+                  link:
+                    $ref: "#/components/schemas/TaskGitLink"
+
+  /api/v1/webhooks/github:
+    post:
+      tags: [Webhooks]
+      operationId: githubWebhook
+      summary: Inbound GitHub webhook
+      security:
+        - githubWebhook: []
+      description: |
+        Authenticated solely by `X-Hub-Signature-256` HMAC-SHA256 of the **raw**
+        body using `GITHUB_WEBHOOK_SECRET` (or per-repo `webhookSecretRef`).
+        No Bearer token. Actor is `GITHUB_WEBHOOK`.
+
+        Handled events (Phase 2): `ping`, `push`, `create`, `delete`,
+        `pull_request`, `pull_request_review`, `check_run`, `check_suite`,
+        `workflow_run`, `deployment`, `deployment_status`, `release`.
+
+        Task association is by identifiers (`TF-123`) in branch names, commit
+        messages, and PR titles/bodies. Delivery is idempotent on
+        `X-GitHub-Delivery`.
+      parameters:
+        - name: X-GitHub-Event
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: X-GitHub-Delivery
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: X-Hub-Signature-256
+          in: header
+          required: true
+          schema:
+            type: string
+            example: sha256=abcdef
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "202":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                    const: true
+        "401":
+          $ref: "#/components/responses/Problem"
+
+  /api/v1/tasks/{taskId}/ai-context:
+    get:
+      tags: [AI]
+      operationId: getAiContext
+      summary: Structured context pack for coding agents
+      description: |
+        Requires membership plus PAT scope `mcp` or `api` (or a user JWT).
+        Response `schema_version` is independent of the HTTP API version.
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - name: include
+          in: query
+          description: Comma-separated sections. Default is all.
+          schema:
+            type: string
+            example: task,requirements,relationships,comments,git,activity
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [json, markdown]
+            default: json
+      responses:
+        "200":
+          description: Context pack
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiContext"
+            text/markdown:
+              schema:
+                type: string
+        "404":
+          $ref: "#/components/responses/Problem"
+
+  /api/v1/tasks/{taskId}/external-references:
+    post:
+      tags: [Tasks]
+      operationId: upsertExternalReference
+      summary: Link an external record (GitHub issue, future Notion/Linear)
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExternalReferenceInput"
+      responses:
+        "200":
+          description: Upserted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reference]
+                properties:
+                  reference:
+                    $ref: "#/components/schemas/ExternalReference"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT or PAT
+      description: |
+        Access JWT (`Authorization: Bearer <jwt>`, 15m, HS256, `sub` = user id)
+        **or** personal access token (`tfpat_…` hashed at rest).
+        Web UI may also send `Cookie: tf_session=…` (opaque, hashed in `Session`).
+    githubWebhook:
+      type: apiKey
+      in: header
+      name: X-Hub-Signature-256
+
+  parameters:
+    WorkspaceSlug:
+      name: slug
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[a-z0-9-]{2,48}$"
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      schema:
+        type: string
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      description: Task cuid or identifier (`TF-123`)
+      schema:
+        type: string
+    WorkflowId:
+      name: workflowId
+      in: path
+      required: true
+      schema:
+        type: string
+    LabelId:
+      name: labelId
+      in: path
+      required: true
+      schema:
+        type: string
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema:
+        type: string
+    TokenId:
+      name: tokenId
+      in: path
+      required: true
+      schema:
+        type: string
+    CommentId:
+      name: commentId
+      in: path
+      required: true
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque keyset cursor from `page.next_cursor`
+      schema:
+        type: string
+    Order:
+      name: order
+      in: query
+      description: "`field:direction`. Allowed fields `created_at`, `updated_at`, `position`, `priority`."
+      schema:
+        type: string
+        default: position:asc
+    StatusIdFilter:
+      name: status_id
+      in: query
+      schema:
+        type: string
+    AssigneeIdFilter:
+      name: assignee_id
+      in: query
+      description: User cuid or the alias `me`
+      schema:
+        type: string
+    LabelIdFilter:
+      name: label_id
+      in: query
+      description: Repeatable; tasks must have **all** listed labels
+      schema:
+        type: array
+        items:
+          type: string
+      style: form
+      explode: true
+    PriorityFilter:
+      name: priority
+      in: query
+      schema:
+        $ref: "#/components/schemas/TaskPriority"
+    TypeIdFilter:
+      name: type_id
+      in: query
+      schema:
+        type: string
+    ParentIdFilter:
+      name: parent_id
+      in: query
+      description: Use `null` as the string `none` for top-level tasks
+      schema:
+        type: string
+    ArchivedFilter:
+      name: archived
+      in: query
+      schema:
+        type: boolean
+        default: false
+    QueryQ:
+      name: q
+      in: query
+      schema:
+        type: string
+        maxLength: 200
+    IfMatch:
+      name: If-Match
+      in: header
+      description: Task `version` as a quoted integer, e.g. `"3"`
+      schema:
+        type: string
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: |
+        Client-generated key (UUID recommended). Replay of the **same** key +
+        actor + method + path within 24h returns the original status and body
+        with `Idempotent-Replayed: true`. A different body with the same key
+        returns `409` `idempotency_key_reused`. Recommended on all POSTs;
+        required on task, comment, and relationship creates.
+      schema:
+        type: string
+        maxLength: 256
+    IdempotencyKeyRequired:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        maxLength: 256
+
+  responses:
+    Problem:
+      description: Error
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    RateLimited:
+      description: Rate limited
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+        RateLimit-Limit:
+          schema:
+            type: integer
+        RateLimit-Remaining:
+          schema:
+            type: integer
+        RateLimit-Reset:
+          schema:
+            type: integer
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+  schemas:
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, ready]
+    Problem:
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+          format: uri
+          example: https://traceforge.dev/problems/validation
+        title:
+          type: string
+        status:
+          type: integer
+        code:
+          type: string
+          description: Stable machine code
+          enum:
+            - unauthorized
+            - forbidden
+            - not_found
+            - validation_error
+            - conflict
+            - version_conflict
+            - illegal_transition
+            - idempotency_key_reused
+            - rate_limited
+            - invalid_signature
+            - internal_error
+        detail:
+          type: string
+        instance:
+          type: string
+        request_id:
+          type: string
+        errors:
+          type: array
+          items:
+            type: object
+            required: [code, detail]
+            properties:
+              pointer:
+                type: string
+                description: JSON Pointer into the request body
+              code:
+                type: string
+              detail:
+                type: string
+    Page:
+      type: object
+      required: [limit, has_more]
+      properties:
+        next_cursor:
+          type: string
+          nullable: true
+        prev_cursor:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
+        limit:
+          type: integer
+    PageEnvelope:
+      type: object
+      properties:
+        page:
+          $ref: "#/components/schemas/Page"
+    User:
+      type: object
+      required: [id, email]
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+          nullable: true
+        avatarUrl:
+          type: string
+          nullable: true
+    RegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+        name:
+          type: string
+          maxLength: 120
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+    AuthSession:
+      type: object
+      required: [user, accessToken]
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        accessToken:
+          type: string
+          description: JWT, 15 minutes
+        refreshToken:
+          type: string
+          description: Opaque/JWT refresh; rotate on use; omit when using cookie session
+        expiresIn:
+          type: integer
+          description: Access token lifetime in seconds
+          default: 900
+        tokenType:
+          type: string
+          const: Bearer
+    CreateTokenRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 120
+        scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/TokenScope"
+          default: [api, mcp]
+        expiresInDays:
+          type: integer
+          minimum: 1
+          maximum: 365
+    CreateTokenResponse:
+      type: object
+      required: [token, tokenMeta]
+      properties:
+        token:
+          type: string
+          description: Plaintext PAT (`tfpat_…`); shown once
+        tokenMeta:
+          $ref: "#/components/schemas/ApiTokenMeta"
+        warning:
+          type: string
+    ApiTokenMeta:
+      type: object
+      required: [id, name, scopes]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/TokenScope"
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        lastUsedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+    TokenScope:
+      type: string
+      enum: [read, write, api, mcp, admin]
+      description: |
+        `read` GET only; `write` mutations; `api` = read+write; `mcp` AI context + MCP;
+        `admin` workspace/project/workflow/member admin. Default on create is `api`+`mcp`.
+    WorkspaceRole:
+      type: string
+      enum: [OWNER, ADMIN, MEMBER, VIEWER]
+    Workspace:
+      type: object
+      required: [id, slug, name, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        slug:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    WorkspaceWithRole:
+      allOf:
+        - $ref: "#/components/schemas/Workspace"
+        - type: object
+          required: [role]
+          properties:
+            role:
+              $ref: "#/components/schemas/WorkspaceRole"
+    CreateWorkspaceRequest:
+      type: object
+      required: [slug, name]
+      properties:
+        slug:
+          type: string
+          pattern: "^[a-z0-9-]{2,48}$"
+        name:
+          type: string
+          maxLength: 120
+        description:
+          type: string
+          maxLength: 2000
+    WorkspaceMember:
+      type: object
+      required: [id, workspaceId, userId, role, createdAt]
+      properties:
+        id:
+          type: string
+        workspaceId:
+          type: string
+        userId:
+          type: string
+        role:
+          $ref: "#/components/schemas/WorkspaceRole"
+        createdAt:
+          type: string
+          format: date-time
+        user:
+          $ref: "#/components/schemas/User"
+    Project:
+      type: object
+      required: [id, workspaceId, workflowId, key, name]
+      properties:
+        id:
+          type: string
+        workspaceId:
+          type: string
+        workflowId:
+          type: string
+        key:
+          type: string
+          description: Task identifier prefix, e.g. TF
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        color:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ProjectDetail:
+      allOf:
+        - $ref: "#/components/schemas/Project"
+        - type: object
+          properties:
+            workflow:
+              $ref: "#/components/schemas/WorkflowDetail"
+    CreateProjectRequest:
+      type: object
+      required: [key, name]
+      properties:
+        key:
+          type: string
+          pattern: "^[A-Z][A-Z0-9]{0,9}$"
+        name:
+          type: string
+        description:
+          type: string
+        workflowId:
+          type: string
+          description: Defaults to the workspace default workflow
+        color:
+          type: string
+    Workflow:
+      type: object
+      required: [id, workspaceId, name, isDefault]
+      properties:
+        id:
+          type: string
+        workspaceId:
+          type: string
+        name:
+          type: string
+        isDefault:
+          type: boolean
+    WorkflowDetail:
+      allOf:
+        - $ref: "#/components/schemas/Workflow"
+        - type: object
+          properties:
+            states:
+              type: array
+              items:
+                $ref: "#/components/schemas/WorkflowState"
+            transitions:
+              type: array
+              items:
+                $ref: "#/components/schemas/WorkflowTransition"
+    WorkflowState:
+      type: object
+      required: [id, workflowId, key, name, category, position, isTerminal]
+      properties:
+        id:
+          type: string
+        workflowId:
+          type: string
+        key:
+          type: string
+        name:
+          type: string
+        category:
+          type: string
+        color:
+          type: string
+        position:
+          type: integer
+        wipLimit:
+          type: integer
+          nullable: true
+        isTerminal:
+          type: boolean
+    WorkflowStateInput:
+      type: object
+      properties:
+        key:
+          type: string
+        name:
+          type: string
+        category:
+          type: string
+        color:
+          type: string
+        position:
+          type: integer
+        wipLimit:
+          type: integer
+          nullable: true
+        isTerminal:
+          type: boolean
+    WorkflowTransition:
+      type: object
+      required: [id, workflowId, fromStateId, toStateId]
+      properties:
+        id:
+          type: string
+        workflowId:
+          type: string
+        fromStateId:
+          type: string
+        toStateId:
+          type: string
+        name:
+          type: string
+          nullable: true
+    CreateWorkflowRequest:
+      type: object
+      required: [name, states]
+      properties:
+        name:
+          type: string
+        isDefault:
+          type: boolean
+        states:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/WorkflowStateInput"
+        transitions:
+          type: array
+          items:
+            type: object
+            required: [fromKey, toKey]
+            properties:
+              fromKey:
+                type: string
+              toKey:
+                type: string
+              name:
+                type: string
+    Label:
+      type: object
+      required: [id, workspaceId, name, color]
+      properties:
+        id:
+          type: string
+        workspaceId:
+          type: string
+        name:
+          type: string
+        color:
+          type: string
+    LabelInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        color:
+          type: string
+    TaskType:
+      type: object
+      required: [id, workspaceId, key, name]
+      properties:
+        id:
+          type: string
+        workspaceId:
+          type: string
+        key:
+          type: string
+        name:
+          type: string
+        icon:
+          type: string
+          nullable: true
+        color:
+          type: string
+          nullable: true
+    TaskTypeInput:
+      type: object
+      required: [key, name]
+      properties:
+        key:
+          type: string
+        name:
+          type: string
+        icon:
+          type: string
+        color:
+          type: string
+    TaskPriority:
+      type: string
+      enum: [NONE, LOW, MEDIUM, HIGH, URGENT]
+    TaskRelationType:
+      type: string
+      enum:
+        - BLOCKS
+        - BLOCKED_BY
+        - RELATES_TO
+        - DUPLICATES
+        - DUPLICATED_BY
+        - DEPENDS_ON
+        - REQUIRED_BY
+        - CAUSED_BY
+        - FIXES
+        - REGRESSION_OF
+        - PARENT_OF
+        - CHILD_OF
+    Task:
+      type: object
+      required: [id, projectId, number, identifier, title, statusId, priority, creatorId, version]
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        number:
+          type: integer
+        identifier:
+          type: string
+          example: TF-123
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        contentMarkdown:
+          type: string
+          nullable: true
+        statusId:
+          type: string
+        priority:
+          $ref: "#/components/schemas/TaskPriority"
+        typeId:
+          type: string
+          nullable: true
+        assigneeId:
+          type: string
+          nullable: true
+        creatorId:
+          type: string
+        parentId:
+          type: string
+          nullable: true
+        position:
+          type: integer
+        version:
+          type: integer
+        dueDate:
+          type: string
+          format: date-time
+          nullable: true
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+        archivedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    TaskSummary:
+      allOf:
+        - $ref: "#/components/schemas/Task"
+        - type: object
+          properties:
+            status:
+              $ref: "#/components/schemas/WorkflowState"
+            assignee:
+              $ref: "#/components/schemas/User"
+            type:
+              $ref: "#/components/schemas/TaskType"
+            labels:
+              type: array
+              items:
+                $ref: "#/components/schemas/Label"
+    TaskDetail:
+      allOf:
+        - $ref: "#/components/schemas/TaskSummary"
+        - type: object
+          properties:
+            project:
+              $ref: "#/components/schemas/Project"
+            comments:
+              type: array
+              items:
+                $ref: "#/components/schemas/Comment"
+            relationships:
+              type: array
+              items:
+                $ref: "#/components/schemas/TaskRelationship"
+            gitLinks:
+              type: array
+              items:
+                $ref: "#/components/schemas/TaskGitLink"
+            taskUrls:
+              type: array
+              items:
+                $ref: "#/components/schemas/TaskUrl"
+            activity:
+              type: array
+              items:
+                $ref: "#/components/schemas/ActivityEvent"
+    CreateTaskRequest:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 500
+        description:
+          type: string
+          maxLength: 50000
+        contentMarkdown:
+          type: string
+          maxLength: 200000
+        priority:
+          $ref: "#/components/schemas/TaskPriority"
+        typeId:
+          type: string
+        assigneeId:
+          type: string
+        parentId:
+          type: string
+        labelIds:
+          type: array
+          items:
+            type: string
+    UpdateTaskRequest:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        contentMarkdown:
+          type: string
+          nullable: true
+        priority:
+          $ref: "#/components/schemas/TaskPriority"
+        typeId:
+          type: string
+          nullable: true
+        assigneeId:
+          type: string
+          nullable: true
+        parentId:
+          type: string
+          nullable: true
+        position:
+          type: integer
+          minimum: 0
+        version:
+          type: integer
+          minimum: 1
+        labelIds:
+          type: array
+          items:
+            type: string
+          description: Replaces the full label set when present
+        dueDate:
+          type: string
+          format: date-time
+          nullable: true
+    TransitionTaskRequest:
+      type: object
+      required: [toStatusId]
+      properties:
+        toStatusId:
+          type: string
+        version:
+          type: integer
+          minimum: 1
+    Comment:
+      type: object
+      required: [id, taskId, authorId, body, createdAt]
+      properties:
+        id:
+          type: string
+        taskId:
+          type: string
+        authorId:
+          type: string
+        body:
+          type: string
+        editedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        author:
+          $ref: "#/components/schemas/User"
+    CreateCommentRequest:
+      type: object
+      required: [body]
+      properties:
+        body:
+          type: string
+          minLength: 1
+          maxLength: 50000
+    TaskRelationship:
+      type: object
+      required: [id, fromTaskId, toTaskId, relationType, createdAt]
+      properties:
+        id:
+          type: string
+        fromTaskId:
+          type: string
+        toTaskId:
+          type: string
+        relationType:
+          $ref: "#/components/schemas/TaskRelationType"
+        createdAt:
+          type: string
+          format: date-time
+    CreateRelationshipRequest:
+      type: object
+      required: [toTaskId, relationType]
+      properties:
+        toTaskId:
+          type: string
+        relationType:
+          $ref: "#/components/schemas/TaskRelationType"
+    TaskUrl:
+      type: object
+      required: [id, taskId, url, kind]
+      properties:
+        id:
+          type: string
+        taskId:
+          type: string
+        url:
+          type: string
+          format: uri
+        title:
+          type: string
+          nullable: true
+        kind:
+          type: string
+          enum:
+            - GENERIC
+            - GITHUB_PR
+            - GITHUB_COMMIT
+            - GITHUB_ISSUE
+            - GITHUB_BRANCH
+            - NOTION_PAGE
+            - LINEAR_ISSUE
+            - DEPLOYMENT
+            - DOCUMENTATION
+            - INCIDENT
+    CreateTaskUrlRequest:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+          maxLength: 2048
+        title:
+          type: string
+          maxLength: 500
+    Attachment:
+      type: object
+      required: [id, taskId, filename, mimeType, sizeBytes, createdAt]
+      properties:
+        id:
+          type: string
+        taskId:
+          type: string
+        filename:
+          type: string
+        mimeType:
+          type: string
+        sizeBytes:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+    ActivityEvent:
+      type: object
+      required: [id, taskId, type, summary, createdAt]
+      properties:
+        id:
+          type: string
+        taskId:
+          type: string
+        type:
+          type: string
+        summary:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+    SearchResult:
+      type: object
+      required: [type, id, title]
+      properties:
+        type:
+          type: string
+          enum: [task]
+        id:
+          type: string
+        identifier:
+          type: string
+        title:
+          type: string
+        snippet:
+          type: string
+        projectId:
+          type: string
+        status:
+          $ref: "#/components/schemas/WorkflowState"
+    GithubRepository:
+      type: object
+      required: [id, workspaceId, fullName]
+      properties:
+        id:
+          type: string
+        workspaceId:
+          type: string
+        owner:
+          type: string
+        name:
+          type: string
+        fullName:
+          type: string
+        defaultBranch:
+          type: string
+    TaskGitLink:
+      type: object
+      required: [id, taskId, kind]
+      properties:
+        id:
+          type: string
+        taskId:
+          type: string
+        kind:
+          type: string
+          enum: [BRANCH, COMMIT, PULL_REQUEST, ISSUE, RELEASE, DEPLOYMENT, MANUAL]
+        externalKey:
+          type: string
+          nullable: true
+        title:
+          type: string
+          nullable: true
+        url:
+          type: string
+          nullable: true
+        linkedAt:
+          type: string
+          format: date-time
+        source:
+          type: string
+    CreateGitLinkRequest:
+      type: object
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [BRANCH, COMMIT, PULL_REQUEST, ISSUE, RELEASE, DEPLOYMENT, MANUAL]
+        externalKey:
+          type: string
+        title:
+          type: string
+        url:
+          type: string
+          format: uri
+    TaskGitHistory:
+      type: object
+      required: [links, branches, commits, pull_requests, deployments]
+      properties:
+        links:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskGitLink"
+        branches:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskGitLink"
+        commits:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskGitLink"
+        pull_requests:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskGitLink"
+        deployments:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskGitLink"
+    ExternalReferenceInput:
+      type: object
+      required: [provider, externalId]
+      properties:
+        provider:
+          type: string
+          enum: [GITHUB, GITLAB, BITBUCKET, NOTION, LINEAR, JIRA]
+        externalId:
+          type: string
+        externalKey:
+          type: string
+        title:
+          type: string
+        url:
+          type: string
+          format: uri
+        metadata:
+          type: object
+          additionalProperties: true
+    ExternalReference:
+      allOf:
+        - $ref: "#/components/schemas/ExternalReferenceInput"
+        - type: object
+          required: [id, taskId]
+          properties:
+            id:
+              type: string
+            taskId:
+              type: string
+            syncedAt:
+              type: string
+              format: date-time
+              nullable: true
+    AiContext:
+      type: object
+      required: [schema_version, generated_at, task]
+      properties:
+        schema_version:
+          type: string
+          example: "1.0"
+        generated_at:
+          type: string
+          format: date-time
+        task:
+          type: object
+          additionalProperties: true
+        requirements:
+          type: object
+          additionalProperties: true
+        relationships:
+          type: object
+          additionalProperties: true
+        comments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Comment"
+        git:
+          $ref: "#/components/schemas/TaskGitHistory"
+        external_references:
+          type: object
+          additionalProperties: true
+        activity:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActivityEvent"
+        human_summary:
+          type: string

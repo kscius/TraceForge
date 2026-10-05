@@ -1,0 +1,669 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Identity & access ─────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String?
+  avatarUrl    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships       WorkspaceMember[]
+  createdTasks      Task[]              @relation("TaskCreator")
+  assignedTasks     Task[]              @relation("TaskAssignee")
+  comments          Comment[]
+  apiTokens         ApiToken[]
+  sessions          Session[]
+  auditEvents       AuditEvent[]        @relation("AuditActor")
+  taskWatchers      TaskWatcher[]
+  githubConnections GitHubConnection[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model ApiToken {
+  id          String    @id @default(cuid())
+  userId      String
+  name        String
+  tokenHash   String    @unique
+  scopes      String[]  @default([])
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  createdAt   DateTime  @default(now())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+model Workspace {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members            WorkspaceMember[]
+  projects           Project[]
+  workflows          WorkflowDefinition[]
+  labels             Label[]
+  taskTypes          TaskTypeDefinition[]
+  integrations       IntegrationConnection[]
+  automationRules    AutomationRule[]
+}
+
+model WorkspaceMember {
+  id          String        @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        WorkspaceRole @default(MEMBER)
+  createdAt   DateTime      @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+// ─── Workflow engine ─────────────────────────────────────────────────────────
+
+model WorkflowDefinition {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace  Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  states     WorkflowState[]
+  transitions WorkflowTransition[]
+  projects   Project[]
+
+  @@index([workspaceId])
+}
+
+model WorkflowState {
+  id         String  @id @default(cuid())
+  workflowId String
+  key        String
+  name       String
+  category   String  @default("active")
+  color      String  @default("#6366f1")
+  position   Int     @default(0)
+  wipLimit   Int?
+  isTerminal Boolean @default(false)
+
+  workflow   WorkflowDefinition @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  tasks      Task[]
+  fromTransitions WorkflowTransition[] @relation("FromState")
+  toTransitions   WorkflowTransition[] @relation("ToState")
+  kanbanColumns     KanbanColumn[]
+
+  @@unique([workflowId, key])
+  @@index([workflowId, position])
+}
+
+model WorkflowTransition {
+  id          String  @id @default(cuid())
+  workflowId  String
+  fromStateId String
+  toStateId   String
+  name        String?
+
+  workflow  WorkflowDefinition @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  fromState WorkflowState      @relation("FromState", fields: [fromStateId], references: [id], onDelete: Cascade)
+  toState   WorkflowState      @relation("ToState", fields: [toStateId], references: [id], onDelete: Cascade)
+
+  @@unique([workflowId, fromStateId, toStateId])
+}
+
+// ─── Projects ────────────────────────────────────────────────────────────────
+
+model Project {
+  id          String   @id @default(cuid())
+  workspaceId String
+  workflowId  String
+  key         String
+  name        String
+  description String?
+  color       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workflow  WorkflowDefinition @relation(fields: [workflowId], references: [id])
+  tasks     Task[]
+  sprints   Sprint[]
+  kanbanBoards KanbanBoard[]
+
+  @@unique([workspaceId, key])
+  @@index([workspaceId])
+}
+
+model Sprint {
+  id        String    @id @default(cuid())
+  projectId String
+  name      String
+  goal      String?
+  startDate DateTime?
+  endDate   DateTime?
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tasks     Task[]
+
+  @@index([projectId])
+}
+
+// ─── Task types & labels ─────────────────────────────────────────────────────
+
+model TaskTypeDefinition {
+  id          String @id @default(cuid())
+  workspaceId String
+  key         String
+  name        String
+  icon        String?
+  color       String?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  tasks     Task[]
+
+  @@unique([workspaceId, key])
+}
+
+model Label {
+  id          String @id @default(cuid())
+  workspaceId String
+  name        String
+  color       String @default("#94a3b8")
+
+  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  tasks     TaskLabel[]
+
+  @@unique([workspaceId, name])
+}
+
+// ─── Tasks ───────────────────────────────────────────────────────────────────
+
+enum TaskPriority {
+  NONE
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model Task {
+  id              String       @id @default(cuid())
+  projectId       String
+  number          Int
+  identifier      String       @unique
+  title           String
+  description     String?
+  contentMarkdown String?
+  statusId        String
+  priority        TaskPriority @default(NONE)
+  typeId          String?
+  assigneeId      String?
+  creatorId       String
+  parentId        String?
+  sprintId        String?
+  epicId          String?
+  milestoneId     String?
+  estimatePoints  Float?
+  dueDate         DateTime?
+  startDate       DateTime?
+  completedAt     DateTime?
+  archivedAt      DateTime?
+  position        Int          @default(0)
+  version         Int          @default(1)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  project   Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  status    WorkflowState      @relation(fields: [statusId], references: [id])
+  type      TaskTypeDefinition? @relation(fields: [typeId], references: [id])
+  assignee  User?              @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  creator   User               @relation("TaskCreator", fields: [creatorId], references: [id])
+  parent    Task?              @relation("Subtasks", fields: [parentId], references: [id])
+  subtasks  Task[]             @relation("Subtasks")
+  sprint    Sprint?            @relation(fields: [sprintId], references: [id])
+  epic      Task?              @relation("EpicTasks", fields: [epicId], references: [id])
+  epicTasks Task[]             @relation("EpicTasks")
+
+  labels        TaskLabel[]
+  watchers      TaskWatcher[]
+  comments      Comment[]
+  relationships TaskRelationship[] @relation("TaskFrom")
+  relatedTo     TaskRelationship[] @relation("TaskTo")
+  attachments   Attachment[]
+  taskUrls      TaskUrl[]
+  externalRefs  ExternalReference[]
+  customFields  TaskCustomField[]
+  gitLinks      TaskGitLink[]
+  activity      ActivityEvent[]
+
+  @@unique([projectId, number])
+  @@index([projectId, statusId, position])
+  @@index([assigneeId])
+  @@index([parentId])
+  @@index([createdAt])
+}
+
+model TaskLabel {
+  taskId  String
+  labelId String
+  task    Task  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  label   Label @relation(fields: [labelId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, labelId])
+}
+
+model TaskWatcher {
+  taskId String
+  userId String
+  task   Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, userId])
+}
+
+enum TaskRelationType {
+  BLOCKS
+  BLOCKED_BY
+  RELATES_TO
+  DUPLICATES
+  DUPLICATED_BY
+  DEPENDS_ON
+  REQUIRED_BY
+  CAUSED_BY
+  FIXES
+  REGRESSION_OF
+  PARENT_OF
+  CHILD_OF
+}
+
+model TaskRelationship {
+  id           String           @id @default(cuid())
+  fromTaskId   String
+  toTaskId     String
+  relationType TaskRelationType
+  createdAt    DateTime         @default(now())
+
+  fromTask Task @relation("TaskFrom", fields: [fromTaskId], references: [id], onDelete: Cascade)
+  toTask   Task @relation("TaskTo", fields: [toTaskId], references: [id], onDelete: Cascade)
+
+  @@unique([fromTaskId, toTaskId, relationType])
+  @@index([toTaskId])
+}
+
+model TaskCustomField {
+  id     String @id @default(cuid())
+  taskId String
+  key    String
+  value  Json
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, key])
+}
+
+// ─── Collaboration ───────────────────────────────────────────────────────────
+
+model Comment {
+  id        String   @id @default(cuid())
+  taskId    String
+  authorId  String
+  body      String
+  editedAt  DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  task   Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  author User @relation(fields: [authorId], references: [id])
+
+  @@index([taskId, createdAt])
+}
+
+model Attachment {
+  id           String   @id @default(cuid())
+  taskId       String
+  filename     String
+  mimeType     String
+  sizeBytes    Int
+  storageKey   String
+  uploadedById String?
+  createdAt    DateTime @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+}
+
+enum UrlKind {
+  GENERIC
+  GITHUB_PR
+  GITHUB_COMMIT
+  GITHUB_ISSUE
+  GITHUB_BRANCH
+  NOTION_PAGE
+  LINEAR_ISSUE
+  DEPLOYMENT
+  DOCUMENTATION
+  INCIDENT
+}
+
+model TaskUrl {
+  id        String   @id @default(cuid())
+  taskId    String
+  url       String
+  title     String?
+  kind      UrlKind  @default(GENERIC)
+  createdAt DateTime @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+}
+
+// ─── Kanban ──────────────────────────────────────────────────────────────────
+
+model KanbanBoard {
+  id        String @id @default(cuid())
+  projectId String
+  name      String @default("Board")
+
+  project Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  columns KanbanColumn[]
+}
+
+model KanbanColumn {
+  id              String  @id @default(cuid())
+  boardId         String
+  workflowStateId String
+  position        Int     @default(0)
+  wipLimit        Int?
+
+  board         KanbanBoard   @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  workflowState WorkflowState @relation(fields: [workflowStateId], references: [id])
+
+  @@unique([boardId, workflowStateId])
+}
+
+// ─── Audit & activity ────────────────────────────────────────────────────────
+
+enum AuditSource {
+  WEB
+  API
+  MCP
+  CLI
+  GITHUB_WEBHOOK
+  AUTOMATION
+  IMPORT
+  SYSTEM
+}
+
+model AuditEvent {
+  id            String      @id @default(cuid())
+  workspaceId   String?
+  entityType    String
+  entityId      String
+  action        String
+  actorUserId   String?
+  actorLabel    String?
+  source        AuditSource
+  integrationId String?
+  previousValue Json?
+  newValue      Json?
+  metadata      Json?
+  createdAt     DateTime    @default(now())
+
+  actor User? @relation("AuditActor", fields: [actorUserId], references: [id])
+
+  @@index([entityType, entityId, createdAt])
+  @@index([workspaceId, createdAt])
+}
+
+model ActivityEvent {
+  id        String   @id @default(cuid())
+  taskId    String
+  type      String
+  summary   String
+  payload   Json?
+  createdAt DateTime @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, createdAt])
+}
+
+// ─── Integrations ────────────────────────────────────────────────────────────
+
+enum IntegrationProvider {
+  GITHUB
+  GITLAB
+  BITBUCKET
+  NOTION
+  LINEAR
+  JIRA
+  SLACK
+  CUSTOM
+}
+
+model IntegrationConnection {
+  id          String              @id @default(cuid())
+  workspaceId String
+  provider    IntegrationProvider
+  name        String
+  config      Json
+  secretsRef  String?
+  enabled     Boolean             @default(true)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, provider])
+}
+
+model ExternalReference {
+  id           String              @id @default(cuid())
+  taskId       String
+  provider     IntegrationProvider
+  externalId   String
+  externalKey  String?
+  title        String?
+  url          String?
+  metadata     Json?
+  syncedAt     DateTime?
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, provider, externalId])
+  @@index([provider, externalId])
+}
+
+// ─── GitHub ──────────────────────────────────────────────────────────────────
+
+model GitHubConnection {
+  id             String   @id @default(cuid())
+  userId         String
+  githubUserId   String
+  githubLogin    String
+  accessTokenRef String
+  createdAt      DateTime @default(now())
+
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  repositories GitHubRepository[]
+}
+
+model GitHubRepository {
+  id              String   @id @default(cuid())
+  connectionId    String
+  workspaceId     String
+  githubRepoId    BigInt
+  owner           String
+  name            String
+  fullName        String
+  defaultBranch   String   @default("main")
+  webhookSecretRef String?
+  createdAt       DateTime @default(now())
+
+  connection GitHubConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  branches   GitBranch[]
+  commits    GitCommit[]
+  pullRequests GitPullRequest[]
+
+  @@unique([workspaceId, fullName])
+  @@index([connectionId])
+}
+
+enum GitLinkKind {
+  BRANCH
+  COMMIT
+  PULL_REQUEST
+  ISSUE
+  RELEASE
+  DEPLOYMENT
+  MANUAL
+}
+
+model TaskGitLink {
+  id        String      @id @default(cuid())
+  taskId    String
+  kind      GitLinkKind
+  refId     String?
+  externalKey String?
+  title     String?
+  url       String?
+  metadata  Json?
+  linkedAt  DateTime    @default(now())
+  source    AuditSource @default(SYSTEM)
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@index([externalKey])
+}
+
+model GitBranch {
+  id           String   @id @default(cuid())
+  repositoryId String
+  name         String
+  sha          String?
+  updatedAt    DateTime @updatedAt
+
+  repository GitHubRepository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@unique([repositoryId, name])
+}
+
+model GitCommit {
+  id           String   @id @default(cuid())
+  repositoryId String
+  sha          String
+  message      String
+  authorName   String?
+  authorEmail  String?
+  committedAt  DateTime
+  metadata     Json?
+
+  repository GitHubRepository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@unique([repositoryId, sha])
+  @@index([committedAt])
+}
+
+model GitPullRequest {
+  id           String   @id @default(cuid())
+  repositoryId String
+  number       Int
+  title        String
+  state        String
+  headRef      String?
+  baseRef      String?
+  mergedAt     DateTime?
+  url          String
+  metadata     Json?
+  updatedAt    DateTime @updatedAt
+
+  repository GitHubRepository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  reviews    GitPullRequestReview[]
+  checkRuns  GitCheckRun[]
+
+  @@unique([repositoryId, number])
+}
+
+model GitPullRequestReview {
+  id            String   @id @default(cuid())
+  pullRequestId String
+  reviewerLogin String?
+  state         String
+  body          String?
+  submittedAt   DateTime?
+
+  pullRequest GitPullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+}
+
+model GitCheckRun {
+  id            String   @id @default(cuid())
+  pullRequestId String?
+  name          String
+  status        String
+  conclusion    String?
+  url           String?
+  completedAt   DateTime?
+
+  pullRequest GitPullRequest? @relation(fields: [pullRequestId], references: [id], onDelete: SetNull)
+}
+
+model GitDeployment {
+  id           String   @id @default(cuid())
+  repositoryId String
+  environment  String
+  sha          String?
+  status       String
+  url          String?
+  deployedAt   DateTime @default(now())
+}
+
+// ─── Automation ──────────────────────────────────────────────────────────────
+
+model AutomationRule {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  enabled     Boolean  @default(true)
+  trigger     Json
+  conditions  Json?
+  actions     Json
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
