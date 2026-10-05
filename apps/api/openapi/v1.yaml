@@ -1701,7 +1701,7 @@ paths:
               properties:
                 fullName:
                   type: string
-                  description: `owner/repo`
+                  description: GitHub repository in owner/repo form
                   example: acme/traceforge
       responses:
         "201":
