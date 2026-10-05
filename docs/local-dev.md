@@ -34,6 +34,4 @@ docker compose -f docker-compose.local.yml up -d --build
 
 If you only need Postgres in Docker and prefer hot reload on the host, use port **15432** in `DATABASE_URL` and run `pnpm dev` yourself. The default `pnpm dev:local` path is **full Docker only**.
 
-## Production hostname
-
-Server-specific files (your production hostname) belong under `deploy/host/` (gitignored). Templates: `deploy/host.example/` — see [deploy/README.md](../deploy/README.md).
+Production deploy (public hostname, TLS, Traefik/Caddy/tunnel) is **not** part of this repository — keep that configuration only on your server (e.g. a local `deploy/` tree, gitignored).

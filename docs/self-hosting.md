@@ -4,10 +4,6 @@
 
 On a machine that already runs other apps on 5432/3000/4000, see [local-dev.md](./local-dev.md).
 
-## Production on your own host
-
-Use `deploy/host.example/` as a template; copy to `deploy/host/` (gitignored) and set your public hostname and secrets. See [deploy/README.md](../deploy/README.md).
-
 ## Quick start (Docker Compose)
 
 ```bash

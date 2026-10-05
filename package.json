@@ -15,7 +15,6 @@
     "build": "turbo run build",
     "dev": "turbo run dev --parallel --filter=@traceforge/api --filter=@traceforge/web",
     "dev:local": "bash scripts/dev-local.sh",
-    "deploy:prod": "bash scripts/deploy-prod.sh",
     "dev:local:down": "docker compose -f docker-compose.local.yml down",
     "dev:local:logs": "docker compose -f docker-compose.local.yml logs -f api web",
     "db:local:up": "docker compose -f docker-compose.local.yml up -d",
