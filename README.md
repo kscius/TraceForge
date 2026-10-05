@@ -211,6 +211,10 @@ The exact technology stack is evaluated based on maintainability, ecosystem matu
 
 ## Quick start (local)
 
+**Shared dev server / port conflicts:** use [isolated Docker dev](docs/local-dev.md) (`pnpm dev:local` — full stack in Compose, ports 13000/14000/15432).
+
+Default (single-project machine):
+
 ```bash
 cp .env.example .env
 docker compose up -d db

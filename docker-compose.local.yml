@@ -1,0 +1,74 @@
+# Isolated full stack — project name traceforge-local, ports 15432 / 14000 / 13000.
+# Usage: pnpm dev:local  (Docker only; no pnpm dev on the host)
+
+name: traceforge-local
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: traceforge
+      POSTGRES_PASSWORD: traceforge
+      POSTGRES_DB: traceforge
+    ports:
+      - "15432:5432"
+    volumes:
+      - traceforge_local_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U traceforge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    environment:
+      DATABASE_URL: postgresql://traceforge:traceforge@db:5432/traceforge
+    command: ["sh", "-c", "pnpm db:migrate:deploy && pnpm db:seed"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    environment:
+      DATABASE_URL: postgresql://traceforge:traceforge@db:5432/traceforge
+      API_HOST: 0.0.0.0
+      API_PORT: 4000
+      API_PUBLIC_URL: ${API_PUBLIC_URL:-http://localhost:14000}
+      WEB_PUBLIC_URL: ${WEB_PUBLIC_URL:-http://localhost:13000}
+      SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev-jwt-access}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-dev-jwt-refresh}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+    ports:
+      - "14000:4000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:14000}
+    ports:
+      - "13000:3000"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  traceforge_local_pg:

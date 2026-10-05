@@ -9,6 +9,8 @@ COPY apps ./apps
 RUN pnpm install --frozen-lockfile || pnpm install
 
 FROM deps AS build
+ARG NEXT_PUBLIC_API_URL=http://localhost:4000
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 COPY . .
 RUN pnpm db:generate && pnpm build
 
